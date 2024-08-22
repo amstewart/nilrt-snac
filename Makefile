@@ -22,16 +22,18 @@ libdir ?= $(exec_prefix)/lib
 sbindir ?= $(exec_prefix)/sbin
 sysconfdir ?= $(prefix)/etc
 
+PYTHON_FILES = \
+	$(shell find nilrt_snac -name \*.py -or -name \*.txt)
+
 SRC_FILES = \
-	src/configure-nilrt-snac \
 	src/nilrt-snac-conflicts/control \
 	src/ni-wireguard-labview/ni-wireguard-labview.initd \
 	src/ni-wireguard-labview/wglv0.conf \
 	src/nilrt-snac \
-	src/util.sh \
 
 DIST_FILES = \
 	$(SRC_FILES) \
+	$(PYTHON_FILES) \
 	LICENSE \
 	README.md \
 	Makefile \
@@ -52,7 +54,7 @@ src/nilrt-snac-conflicts/nilrt-snac-conflicts.ipk :
 # PHONY TARGETS #
 #################
 
-.PHONY : all clean dist install uninstall
+.PHONY : all clean dist install uninstall test
 
 all : src/nilrt-snac-conflicts/nilrt-snac-conflicts.ipk
 
@@ -70,10 +72,14 @@ install : all $(DIST_FILES)
 	install -o 0 -g 0 --mode=0755 -t "$(DESTDIR)$(sbindir)" \
 		src/nilrt-snac
 
-	mkdir -p $(DESTDIR)$(libdir)/$(PACKAGE)
-	install --mode=0444 -t "$(DESTDIR)$(libdir)/$(PACKAGE)" \
-		src/configure-nilrt-snac \
-		src/util.sh \
+	mkdir -p $(DESTDIR)$(libdir)/$(PACKAGE)/nilrt_snac
+	install --mode=0444 -t "$(DESTDIR)$(libdir)/$(PACKAGE)/nilrt_snac" \
+		$(shell find nilrt_snac -name \*.py -or -name \*.txt -maxdepth 1) \
+
+	# install doesn't support recursive copy
+	mkdir -p $(DESTDIR)$(libdir)/$(PACKAGE)/nilrt_snac/_configs
+	install --mode=0444 -t "$(DESTDIR)$(libdir)/$(PACKAGE)/nilrt_snac/_configs" \
+		$(shell find nilrt_snac/_configs -name \*.py -maxdepth 1) \
 
 	mkdir -p $(DESTDIR)$(docdir)/$(PACKAGE)
 	install --mode=0444 -t "$(DESTDIR)$(docdir)/$(PACKAGE)" \
