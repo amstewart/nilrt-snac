@@ -4,3 +4,6 @@
 /src/nilrt-snac-conflicts/*.ipk
 
 __pycache__/
+
+# pytest generated files
+**/.pytest_cache

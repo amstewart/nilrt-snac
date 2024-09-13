@@ -3,7 +3,7 @@ import argparse
 from nilrt_snac._configs._base_config import _BaseConfig
 
 from nilrt_snac import logger
-from nilrt_snac.OpkgHelper import opkg_helper
+from nilrt_snac.opkg import opkg_helper
 
 
 class _X11Config(_BaseConfig):

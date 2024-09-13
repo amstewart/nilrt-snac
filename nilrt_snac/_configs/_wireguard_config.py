@@ -7,7 +7,7 @@ from nilrt_snac._configs._base_config import _BaseConfig
 from nilrt_snac._configs._config_file import _ConfigFile
 
 from nilrt_snac import logger
-from nilrt_snac.OpkgHelper import OPKG_SNAC_CONF, opkg_helper
+from nilrt_snac.opkg import OPKG_SNAC_CONF, opkg_helper
 
 WIREGUARD_TOOLS_DEB = "http://ftp.us.debian.org/debian/pool/main/w/wireguard/wireguard-tools_1.0.20210914-1+b1_amd64.deb"
 

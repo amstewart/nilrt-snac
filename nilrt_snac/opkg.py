@@ -17,7 +17,6 @@ class OpkgHelper:  # noqa: D101 - Missing docstring in public class (auto-genera
             logger.warning("Not running on nilrt, can't get list of installed packages.")
             return
 
-        self.update()
         packages = self._run(["list-installed"])
 
         for line in packages.split("\n"):

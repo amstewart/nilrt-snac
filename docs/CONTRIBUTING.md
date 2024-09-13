@@ -23,7 +23,20 @@ See the README for installation instructions.
 
 ## Testing
 
-`nilrt-snac` does not currently have a test suite. Please hand-test commits before contributing them to the repo, and include a summary of the testing you performed in your PR summary.
+The nilrt-snac project has integration tests implemented in pytest. The integration tests are only valid to run after installing the project to a system. They can be invoked by calling `make installcheck`, or invoking `pytest` against the tests directly.
+
+```bash
+make install
+make installcheck
+```
+
+OR
+
+```bash
+python3 -m pytest ${prefix}/lib/nilrt-snac/tests/integration
+```
+
+Some test cases are expected to fail, if you install the test to `/usr/local` or on a non-NILRT system.
 
 
 ## Upstreaming Changes

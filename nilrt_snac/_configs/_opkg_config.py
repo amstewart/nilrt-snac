@@ -7,7 +7,7 @@ from nilrt_snac._configs._base_config import _BaseConfig
 from nilrt_snac._configs._config_file import _ConfigFile
 
 from nilrt_snac import logger
-from nilrt_snac.OpkgHelper import OPKG_SNAC_CONF, opkg_helper
+from nilrt_snac.opkg import OPKG_SNAC_CONF, opkg_helper
 
 
 class _OPKGConfig(_BaseConfig):

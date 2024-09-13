@@ -6,7 +6,7 @@ from enum import IntEnum
 
 __version__ = "0.9.0"
 
-SNAC_DATA_DIR = pathlib.Path(__file__).parents[3] / "share" / "nilrt-snac"
+SNAC_DATA_DIR = pathlib.Path(__file__).resolve().parents[3] / "share" / "nilrt-snac"
 
 logger = logging.getLogger(__package__)
 logger.addHandler(logging.NullHandler())

@@ -7,7 +7,7 @@ import tempfile
 from nilrt_snac._configs._base_config import _BaseConfig
 
 from nilrt_snac import logger
-from nilrt_snac.OpkgHelper import opkg_helper
+from nilrt_snac.opkg import opkg_helper
 
 USBGUARD_SRC_URL = (
     "https://github.com/USBGuard/usbguard/releases/download/usbguard-1.1.2/usbguard-1.1.2.tar.gz"

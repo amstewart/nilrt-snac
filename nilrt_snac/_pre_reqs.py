@@ -3,7 +3,7 @@ import pathlib
 import subprocess
 
 from nilrt_snac._common import get_distro
-from nilrt_snac.OpkgHelper import opkg_helper
+from nilrt_snac.opkg import opkg_helper
 
 from nilrt_snac import Errors, SNACError, logger
 
@@ -11,7 +11,7 @@ from nilrt_snac import Errors, SNACError, logger
 def _check_euid_root():
     print("Checking EUID")
     if os.geteuid() != 0:
-        raise SNACError("This script must be run as root.", Errors.EX_BAD_ENVIRONEMNT)
+        raise SNACError("This script must be run as root.", Errors.EX_BAD_ENVIRONMENT)
 
 
 # Check that iptables is available.
@@ -39,13 +39,13 @@ def _check_iptables():
 def _check_runmode():
     safe_mode = pathlib.Path("/etc/natinst/safemode")
     if safe_mode.exists():
-        raise SNACError("This script cannot be run in safe mode.", Errors.EX_BAD_ENVIRONEMNT)
+        raise SNACError("This script cannot be run in safe mode.", Errors.EX_BAD_ENVIRONMENT)
 
 
 # Check that the script is running on NI LinuxRT
 def _check_nilrt():
     if get_distro() != "nilrt":
-        raise SNACError("This script must be run on a NILRT system.", Errors.EX_BAD_ENVIRONEMNT)
+        raise SNACError("This script must be run on a NILRT system.", Errors.EX_BAD_ENVIRONMENT)
 
 
 def verify_prereqs():  # noqa: D103 - Missing docstring in public function (auto-generated noqa)

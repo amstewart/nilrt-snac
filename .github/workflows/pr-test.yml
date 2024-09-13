@@ -1,0 +1,45 @@
+name: PR Testing
+
+on: [pull_request]
+
+jobs:
+  make-workflows:
+    runs-on: ubuntu-latest
+
+    env:
+      DESTDIR: /tmp/nilrt-snac
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history so that git-describe works
+      - run: make all
+      - name: make install
+        run: |
+          make install
+          tree -ap "${DESTDIR}"
+      - name: make uninstall
+        run: |
+          make uninstall
+          tree -ap "${DESTDIR}"
+          
+          leftover_files=false
+          find "${DESTDIR}" -type f >./leftover_files
+          
+          while read file; do
+            echo "ERROR: leftover file: ${file}"
+            leftover_files=true
+          done <./leftover_files
+
+          if $leftover_files; then
+            echo "ERROR: uninstall did not remove all files."
+            cat ./leftover_files
+            exit 1
+          else
+            echo "OK"
+          fi
+      - name: make dist
+        run: |
+          make dist
+          tar --list -f ./nilrt-snac-*.tar.gz

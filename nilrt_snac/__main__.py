@@ -6,14 +6,15 @@ import sys
 from typing import List, Optional
 
 from nilrt_snac._pre_reqs import verify_prereqs
-from nilrt_snac.OpkgHelper import opkg_helper
+from nilrt_snac.opkg import opkg_helper
 from nilrt_snac._configs import CONFIGS
 
 
 from nilrt_snac import Errors, logger, SNACError, __version__
 
+PROG_NAME = "nilrt-snac"
 VERSION_DESCRIPTION = \
-f"""
+f"""\
 nilrt-snac {__version__}
 Copyright (C) 2024 NI (Emerson Electric)
 License MIT: MIT License <https://spdx.org/licenses/MIT.html>
@@ -37,6 +38,7 @@ def _configure(args: argparse.Namespace) -> int:
         return Errors.EX_OK
 
     print("Configuring SNAC mode.")
+    opkg_helper.update()
     for config in CONFIGS:
         config.configure(args)
 
@@ -61,7 +63,10 @@ def _verify(args: argparse.Namespace) -> int:
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
     """Top level entry point for the command line interface."""
-    parser = argparse.ArgumentParser(description="Utility for enabling SNAC mode on NI Linux RT.")
+    parser = argparse.ArgumentParser(
+        description="Utility for enabling SNAC mode on NI Linux RT.",
+        prog=PROG_NAME,
+    )
 
     subparsers = parser.add_subparsers(help="Commands for SNAC mode.", dest="cmd")
     subparsers.required = False
