@@ -8,7 +8,6 @@ from nilrt_snac._configs._cryptsetup_config import _CryptSetupConfig
 from nilrt_snac._configs._faillock_config import _FaillockConfig
 from nilrt_snac._configs._firewall_config import _FirewallConfig
 from nilrt_snac._configs._graphical_config import _GraphicalConfig
-from nilrt_snac._configs._niauth_config import _NIAuthConfig
 from nilrt_snac._configs._ntp_config import _NTPConfig
 from nilrt_snac._configs._opkg_config import _OPKGConfig
 from nilrt_snac._configs._pwquality_config import _PWQualityConfig
@@ -26,7 +25,6 @@ CONFIGS: List[_BaseConfig] = [
     _OPKGConfig(),
     _WireguardConfig(),
     _CryptSetupConfig(),
-    _NIAuthConfig(),
     _WIFIConfig(),
     _FaillockConfig(),
     _GraphicalConfig(),
