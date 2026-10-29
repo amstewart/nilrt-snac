@@ -33,8 +33,20 @@ class _WIFIConfig(_BaseConfig):
         config_file.save(dry_run)
         if not dry_run:
             logger.debug("Removing any WiFi modules in memory")
-            # We do not check for success. If the modules are not loaded, this will return an error
-            run_with_logging("rmmod", "cfg80211", "mac80211", check=False)
+            result = run_with_logging(
+                "rmmod", "cfg80211", "mac80211", check=False, stream_output=False
+            )
+            expected_errors = {
+                "rmmod: ERROR: Module cfg80211 is not currently loaded",
+                "rmmod: ERROR: Module mac80211 is not currently loaded",
+            }
+            unexpected_output = "".join(
+                line
+                for line in result.stdout.splitlines(keepends=True)
+                if line.strip() not in expected_errors
+            )
+            if unexpected_output:
+                print(unexpected_output, end="")
 
     def verify(self, args: argparse.Namespace) -> bool:
         print("Verifying WiFi support disabled...")

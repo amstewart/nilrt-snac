@@ -181,14 +181,15 @@ def run_with_logging(*args, **kwargs) -> subprocess.CompletedProcess:
     """Run a subprocess command with real-time output capture to logs.
 
     This function wraps subprocess execution to ensure all output is captured
-    to log files while maintaining real-time console output. It streams output
-    line-by-line as the subprocess runs, so the output flows through sys.stdout
-    which is captured by the _TeeStream when logging is active.
+    to log files. By default, it streams output line-by-line to the console so
+    the output flows through sys.stdout, which is captured by the _TeeStream
+    when logging is active.
 
     Args:
         *args: Command and arguments to execute
         **kwargs: Additional keyword arguments for subprocess.Popen
             - check: If True (default), raise CalledProcessError on non-zero exit
+            - stream_output: If True (default), write command output to stdout
             - All other kwargs are passed to subprocess.Popen
 
     Returns:
@@ -203,6 +204,7 @@ def run_with_logging(*args, **kwargs) -> subprocess.CompletedProcess:
     """
     # Extract check parameter (default to True for compatibility with subprocess.run)
     check = kwargs.pop("check", True)
+    stream_output = kwargs.pop("stream_output", True)
 
     # Force output capture and streaming
     kwargs["stdout"] = subprocess.PIPE
@@ -220,8 +222,9 @@ def run_with_logging(*args, **kwargs) -> subprocess.CompletedProcess:
     # This writes to sys.stdout, which is captured by _TeeStream when logging is active
     if process.stdout:
         for line in process.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            if stream_output:
+                sys.stdout.write(line)
+                sys.stdout.flush()
             output_lines.append(line)
 
     # Wait for process to complete
