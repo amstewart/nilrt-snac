@@ -1,11 +1,43 @@
 import argparse
 import subprocess
+import time
+from typing import Dict, Tuple
 
 from nilrt_snac._configs._base_config import _BaseConfig
 from nilrt_snac._logging import run_with_logging
 
 from nilrt_snac import logger
 from nilrt_snac.opkg import opkg_helper
+
+
+# Reject unmatched traffic before the distro's zone service openings are evaluated.
+_POLICY_PRIORITY = "-1000"
+_POLICIES = (
+    (
+        "work-in", "work", "HOST",
+        (
+            "ssh", "dhcpv6-client", "mdns", "ni-labview-realtime", "ni-labview-viserver",
+            "ni-logos-xt", "ni-mxs", "ni-service-locator",
+        ),
+        # The distro no longer supplies ni-rpc-server (43973/tcp).
+        ("43973/tcp", "55184/tcp"),
+    ),
+    (
+        "work-out", "HOST", "work",
+        ("ssh", "http", "https", "syslog", "ni-logos-xt", "amqp", "salt-master"),
+        (),
+    ),
+    (
+        "public-in", "public", "HOST",
+        ("ssh", "wireguard", "dhcpv6-client"),
+        (),
+    ),
+    (
+        "public-out", "HOST", "public",
+        ("dhcp", "dhcpv6", "http", "https", "wireguard", "dns", "ntp"),
+        (),
+    ),
+)
 
 
 def _cmd(*args: str):
@@ -18,38 +50,65 @@ def _offlinecmd(*args: str):
     run_with_logging("firewall-offline-cmd", "-q", *args, check=True)
 
 
-def _check_target(policy: str, expected: str = "REJECT") -> bool:
-    "Verifies firewall-cmd --policy=POLICY --get-target matches what is expected."
-
-    actual: str = subprocess.getoutput(f"firewall-cmd --permanent --policy={policy} --get-target")
-    if expected == actual:
+def _check_setting(
+    *args: str, expected: str, permanent: bool = True, expected_returncode: int = 0
+) -> bool:
+    command = ("firewall-cmd", "--permanent") if permanent else ("firewall-cmd",)
+    result = run_with_logging(*command, *args, check=False, stream_output=False)
+    actual = result.stdout.strip()
+    if result.returncode == expected_returncode and sorted(actual.split()) == sorted(expected.split()):
         return True
-    logger.error(f"ERROR: policy {policy} target: expected {expected}, observed {actual}")
+    logger.error(
+        f"ERROR: {' '.join(command + args)}: expected {expected!r}, "
+        f"observed {actual!r} (exit {result.returncode})"
+    )
     return False
 
 
-def _check_service(Q: str, service: str, expected: str = "yes") -> bool:
-    """Verifies firewall-cmd (--policy=POLICY/--zone=ZONE/etc.) --query-service=SERVICE
-    matches what is expected.
-    """
+def _check_policy(
+    name: str, ingress: str, egress: str,
+    services: Tuple[str, ...], ports: Tuple[str, ...], permanent: bool
+) -> bool:
+    command = ("firewall-cmd", "--permanent") if permanent else ("firewall-cmd",)
+    result = run_with_logging(
+        *command, f"--policy={name}", "--list-all", check=False, stream_output=False
+    )
+    if result.returncode != 0:
+        logger.error(f"ERROR: cannot read policy {name}: {result.stdout.strip()}")
+        return False
 
-    actual: str = subprocess.getoutput(f"firewall-cmd --permanent {Q} --query-service={service}")
-    if expected == actual:
-        return True
-    logger.error(f"ERROR: {Q} service {service}: expected {expected}, observed {actual}")
-    return False
+    actual: Dict[str, str] = {}
+    key = ""
+    for line in result.stdout.splitlines()[1:]:
+        if line.startswith("  ") and not line.startswith("    "):
+            key, _, value = line.strip().partition(":")
+            actual[key] = value.strip()
+        elif key:
+            actual[key] += " " + line.strip()
 
-
-def _check_service_info(service: str, Q: str, expected: str) -> bool:
-    """Verifies firewall-cmd --service=SERVICE (--get-ports/--get-description/etc.)
-    matches what is expected.
-    """
-
-    actual: str = subprocess.getoutput(f"firewall-cmd --permanent --service={service} {Q}")
-    if expected == actual:
-        return True
-    logger.error(f"ERROR: service {service} {Q}: expected {expected}, observed {actual}")
-    return False
+    valid = True
+    for key, expected in (
+        ("priority", _POLICY_PRIORITY),
+        ("target", "REJECT"),
+        ("ingress-zones", ingress),
+        ("egress-zones", egress),
+        ("services", " ".join(services)),
+        ("ports", " ".join(ports)),
+        ("protocols", "icmp ipv6-icmp"),
+        ("masquerade", "no"),
+        ("forward-ports", ""),
+        ("source-ports", ""),
+        ("icmp-blocks", ""),
+        ("rich rules", ""),
+    ):
+        observed = actual.get(key)
+        if observed is None or sorted(observed.split()) != sorted(expected.split()):
+            logger.error(
+                f"ERROR: policy {name} {key} (permanent={permanent}): "
+                f"expected {expected!r}, observed {observed!r}"
+            )
+            valid = False
+    return valid
 
 
 class _FirewallConfig(_BaseConfig):
@@ -69,86 +128,60 @@ class _FirewallConfig(_BaseConfig):
         self._opkg_helper.install("firewalld-log-rotate")
         self._opkg_helper.install("ni-firewalld-servicedefs")
 
-        _offlinecmd("--reset-to-defaults")
+        # Preserve distro-owned zones, services and drop-ins; replace only our policies.
+        policies = run_with_logging(
+            "firewall-offline-cmd", "--get-policies", check=True, stream_output=False
+        ).stdout.split()
+        for name, ingress, egress, services, ports in _POLICIES:
+            if name in policies:
+                _offlinecmd(f"--delete-policy={name}")
+            _offlinecmd(f"--new-policy={name}")
+            for option in (
+                f"--add-ingress-zone={ingress}",
+                f"--add-egress-zone={egress}",
+                f"--set-priority={_POLICY_PRIORITY}",
+                "--set-target=REJECT",
+                "--add-protocol=icmp",
+                "--add-protocol=ipv6-icmp",
+            ):
+                _offlinecmd(f"--policy={name}", option)
+            _offlinecmd(
+                f"--policy={name}",
+                *(f"--add-service={service}" for service in services),
+            )
+            if ports:
+                _offlinecmd(f"--policy={name}", *(f"--add-port={port}" for port in ports))
 
-        _offlinecmd("--zone=work", "--add-interface=wglv0")
+        default_zone = run_with_logging(
+            "firewall-offline-cmd", "--get-default-zone", check=True, stream_output=False
+        ).stdout.strip()
+        if default_zone != "public":
+            _offlinecmd("--set-default-zone=public")
+        work_interfaces = run_with_logging(
+            "firewall-offline-cmd", "--zone=work", "--list-interfaces",
+            check=True, stream_output=False,
+        ).stdout.split()
+        if "wglv0" not in work_interfaces:
+            _offlinecmd("--zone=work", "--change-interface=wglv0")
         _offlinecmd("--zone=work", "--remove-forward")
         _offlinecmd("--zone=public", "--remove-forward")
+        _offlinecmd("--check-config")
 
-        _offlinecmd("--new-policy=work-in")
-        _offlinecmd("--policy=work-in", "--add-ingress-zone=work")
-        _offlinecmd("--policy=work-in", "--add-egress-zone=HOST")
-        _offlinecmd("--policy=work-in", "--add-protocol=icmp")
-        _offlinecmd("--policy=work-in", "--add-protocol=ipv6-icmp")
-        _offlinecmd(
-            "--policy=work-in",
-            "--add-service=ssh",
-            "--add-service=mdns",
+        run_with_logging(
+            "nirtcfg", "--set", "section=SystemSettings,token=firewall.enabled,value=True",
+            check=True,
         )
-
-        _offlinecmd("--new-policy=work-out")
-        _offlinecmd("--policy=work-out", "--add-ingress-zone=HOST")
-        _offlinecmd("--policy=work-out", "--add-egress-zone=work")
-        _offlinecmd("--policy=work-out", "--add-protocol=icmp")
-        _offlinecmd("--policy=work-out", "--add-protocol=ipv6-icmp")
-        _offlinecmd(
-            "--policy=work-out",
-            "--add-service=ssh",
-            "--add-service=http",
-            "--add-service=https",
-            "--add-service=syslog",
-            "--add-service=ni-logos-xt",
-        )
-        _offlinecmd("--policy=work-out", "--set-target=REJECT")
-
-        _offlinecmd("--new-policy=public-in")
-        _offlinecmd("--policy=public-in", "--add-ingress-zone=public")
-        _offlinecmd("--policy=public-in", "--add-egress-zone=HOST")
-        _offlinecmd("--policy=public-in", "--add-protocol=icmp")
-        _offlinecmd("--policy=public-in", "--add-protocol=ipv6-icmp")
-        _offlinecmd(
-            "--policy=public-in",
-            "--add-service=ssh",
-            "--add-service=wireguard",
-        )
-
-        _offlinecmd("--new-policy=public-out")
-        _offlinecmd("--policy=public-out", "--add-ingress-zone=HOST")
-        _offlinecmd("--policy=public-out", "--add-egress-zone=public")
-        _offlinecmd("--policy=public-out", "--add-protocol=icmp")
-        _offlinecmd("--policy=public-out", "--add-protocol=ipv6-icmp")
-        _offlinecmd(
-            "--policy=public-out",
-            "--add-service=dhcp",
-            "--add-service=dhcpv6",
-            "--add-service=http",
-            "--add-service=https",
-            "--add-service=wireguard",
-            "--add-service=dns",
-            "--add-service=ntp",
-        )
-        _offlinecmd("--policy=public-out", "--set-target=REJECT")
-
-        _offlinecmd(
-            "--policy=work-in",
-            "--add-service=ni-labview-realtime",
-            "--add-service=ni-labview-viserver",
-            "--add-service=ni-logos-xt",
-            "--add-service=ni-mxs",
-            "--add-service=ni-rpc-server",
-            "--add-service=ni-service-locator",
-        )
-        _offlinecmd(
-            "--policy=work-in",
-            # Temporary port add; see x-niroco-static-port.ini
-            "--add-port=55184/tcp",
-        )
-        _offlinecmd(
-            "--policy=work-out",
-            "--add-service=amqp",
-            "--add-service=salt-master",
-        )
-
+        run_with_logging("/etc/init.d/firewalld", "start", check=True)
+        for attempt in range(11):
+            state = run_with_logging(
+                "firewall-cmd", "--state", check=False, stream_output=False
+            )
+            if state.returncode == 0:
+                break
+            if state.returncode != 252 or attempt == 10:
+                logger.error(f"ERROR: firewalld did not become ready: {state.stdout.strip()}")
+                raise subprocess.CalledProcessError(state.returncode, state.args, output=state.stdout)
+            time.sleep(1)
         _cmd("--reload")
 
     def verify(self, args: argparse.Namespace) -> bool:
@@ -156,28 +189,36 @@ class _FirewallConfig(_BaseConfig):
         valid: bool = True
 
         try:
-            pid: int = int(subprocess.getoutput("pidof -x /usr/sbin/firewalld"))
-        except ValueError:
-            logger.error(f"MISSING: running firewalld")
-            valid = False
-
-        try:
+            _cmd("--state")
             _cmd("--check-config")
-        except FileNotFoundError:
-            logger.error(f"MISSING: firewall-cmd")
+        except (FileNotFoundError, subprocess.CalledProcessError) as error:
+            logger.error(f"ERROR: firewalld is unavailable or its configuration is invalid: {error}")
+            return False
+
+        enabled = run_with_logging(
+            "nirtcfg", "--get", "section=SystemSettings,token=firewall.enabled,value=False",
+            check=False, stream_output=False,
+        )
+        if enabled.returncode != 0 or enabled.stdout.strip().lower() != "true":
+            logger.error(f"ERROR: firewall.enabled must be True; observed {enabled.stdout.strip()!r}")
             valid = False
 
-        valid = all(
-            [
-                _check_target("work-in", "CONTINUE"),
-                _check_target("work-out"),
-                _check_target("public-in", "CONTINUE"),
-                _check_target("public-out"),
-                _check_service("--policy=work-in", "ni-labview-realtime"),
-                _check_service("--policy=public-in", "ni-labview-realtime", "no"),
-                _check_service("--zone=public", "ni-labview-realtime", "no"),
-                _check_service_info("ni-labview-realtime", "--get-ports", "3079/tcp"),
+        valid = _check_setting("--get-default-zone", expected="public", permanent=False) and valid
+        valid = _check_setting(
+            "--service=ni-labview-realtime", "--get-ports", expected="3079/tcp"
+        ) and valid
+        for permanent in (True, False):
+            checks = [
+                _check_setting("--get-zone-of-interface=wglv0", expected="work", permanent=permanent),
             ]
-        )
+            for zone in ("work", "public"):
+                checks.append(_check_setting(
+                    f"--zone={zone}", "--query-forward", expected="no",
+                    permanent=permanent, expected_returncode=1,
+                ))
+
+            for name, ingress, egress, services, ports in _POLICIES:
+                checks.append(_check_policy(name, ingress, egress, services, ports, permanent))
+            valid = all(checks) and valid
 
         return valid

@@ -47,6 +47,25 @@ python3 -m pytest ${prefix}/lib/nilrt-snac/tests/integration
 
 Some test cases are expected to fail, if you install the test to `/usr/local` or on a non-NILRT system.
 
+The mocked firewall regression tests can run directly from the source tree:
+
+```bash
+python3 -m pytest tests/integration/test_firewall_config.py
+```
+
+On a disposable NILRT testbench with SNAC's firewall configured, run the packet
+tests as root:
+
+```bash
+python3 tests/system/test_firewall_policy.py
+```
+
+These tests temporarily create a network namespace and veth pair, and apply a
+test NI firewall drop-in. They check IPv4/IPv6 TCP allowlists, including public
+rejection of NI services opened by the distro hook, and clean up their network
+and drop-in changes afterward. Required commands are `ip`, `firewall-cmd`, and
+`ni-firewall-apply`; no additional Python packages are needed.
+
 
 ## Upstreaming Changes
 
