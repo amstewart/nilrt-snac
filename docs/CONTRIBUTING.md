@@ -54,17 +54,20 @@ python3 -m pytest tests/integration/test_firewall_config.py
 ```
 
 On a disposable NILRT testbench with SNAC's firewall configured, run the packet
-tests as root:
+tests as root, supplying unused host/peer addresses for an IPv4 `/30` and an
+IPv6 `/64` that do not overlap existing interfaces or routes:
 
 ```bash
-python3 tests/system/test_firewall_policy.py
+python3 tests/system/test_firewall_policy.py \
+    --ipv4-host HOST_IPV4 --ipv4-peer PEER_IPV4 \
+    --ipv6-host HOST_IPV6 --ipv6-peer PEER_IPV6
 ```
 
-These tests temporarily create a network namespace and veth pair, and apply a
-test NI firewall drop-in. They check IPv4/IPv6 TCP allowlists, including public
-rejection of NI services opened by the distro hook, and clean up their network
-and drop-in changes afterward. Required commands are `ip`, `firewall-cmd`, and
-`ni-firewall-apply`; no additional Python packages are needed.
+See the test script's docstring for system requirements and assumptions. The
+test temporarily creates a network namespace and veth pair and applies a test
+NI firewall drop-in; it cleans up its network and drop-in changes afterward.
+Inbound probes use an existing listener when a service already owns a tested
+port, so the test does not need to stop or alter services.
 
 
 ## Upstreaming Changes
