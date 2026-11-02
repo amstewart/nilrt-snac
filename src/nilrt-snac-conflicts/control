@@ -1,4 +1,4 @@
 Package: nilrt-snac-conflicts
 Architecture: all
 Version: 0.1
-Conflicts: niacctbase-sudo
+Conflicts: ni-auth (<< 27.1.0), niacctbase-sudo
