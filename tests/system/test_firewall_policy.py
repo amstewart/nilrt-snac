@@ -48,6 +48,13 @@ with socket.socket(family, socket.SOCK_STREAM) as server:
     except OSError as error:
         if error.errno != errno.EADDRINUSE:
             raise
+        try:
+            with socket.create_connection((address, port), timeout=1):
+                pass
+        except OSError as probe_error:
+            raise RuntimeError(
+                f"{address}:{port} is already bound but no listener accepted a connection"
+            ) from probe_error
         print("occupied", flush=True)
         sys.exit(0)
     server.listen(1)
@@ -64,7 +71,9 @@ except TimeoutError as error:
     print(error, file=sys.stderr)
     sys.exit(3)
 except OSError as error:
-    if error.errno not in (errno.ECONNREFUSED, errno.EHOSTUNREACH):
+    if error.errno not in (
+        errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.EACCES, errno.EPERM
+    ):
         raise
     print(error, file=sys.stderr)
     sys.exit(3)
