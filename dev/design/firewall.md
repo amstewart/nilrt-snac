@@ -241,6 +241,10 @@ Ship `/usr/lib/firewalld/policies/ni-dropins.xml`:
   * its target is `CONTINUE`;
   * every service named by a marker in `/etc/ni/firewall/open.d/` is enabled in `ni-dropins`;
   * no core NI service is enabled in zone `public` (see [Core services](#core-services)).
+* Run the new checks against the permanent configuration and, while firewalld runs, the runtime
+  configuration. A runtime change takes effect at once but is lost on reload; a permanent one takes
+  effect only on reload. Read the policy with a single `firewall-cmd --info-policy` per
+  configuration, since each `firewall-cmd` call costs about a second on a cRIO.
 * The existing assertions keep working.
   * Examples: "`ni-labview-realtime` is not in zone `public`" and "... not in policy `public-in`".
   * Drop-ins no longer touch the `public` zone, so these checks no longer fail when a product
