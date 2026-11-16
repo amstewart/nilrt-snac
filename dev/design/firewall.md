@@ -190,10 +190,12 @@ Ship `/usr/lib/firewalld/policies/ni-dropins.xml`:
   * First open the services from the old state file that are still declared in `ni-dropins`. Then
     close every service from the old state file in the default zone. A declared service therefore
     stays reachable throughout.
-  * If either step fails, keep the old state file, so the next run retries the whole migration.
-    Reopening is idempotent.
-  * Rewrite the state file in the new format. The migrated services that are still declared are
-    recorded as the hook's own.
+  * Before opening them, record the still-declared services as the hook's own in the policy.
+  * The v2 state file keeps ownership and pending cleanup apart: plain lines are services the hook
+    owns in the policy, and `zone:<service>` lines are default-zone removals still to be done.
+  * If a step fails, write the state file before exiting, and retry the pending removals on the
+    next run. Reopening is idempotent. A service whose marker is gone by then is closed in the
+    policy like any other owned service, so a partial migration can't leak a policy rule.
   * Services the hook never recorded, such as the core services, are never touched.
 
 **Policy loading on install or upgrade**
