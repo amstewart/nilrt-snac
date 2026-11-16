@@ -18,6 +18,7 @@ def test_configure_dry_run_logs_package_installs(caplog):
         "firewalld-offline-cmd",
         "firewalld-log-rotate",
         "ni-firewalld-servicedefs",
+        "ni-firewall-dropins",
     ]
     caplog.set_level(logging.INFO, logger="nilrt_snac")
 
@@ -51,6 +52,7 @@ def test_configure_allows_ni_orb_rpc_server():
 
     def run_with_logging(*args, **kwargs):
         system_calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0)
 
     with (
         patch.object(config._opkg_helper, "install"),
@@ -117,5 +119,118 @@ def test_verify_fails_when_firewall_is_disabled():
         patch.object(_firewall_config, "_check_target", return_value=True),
         patch.object(_firewall_config, "_check_service", return_value=True),
         patch.object(_firewall_config, "_check_service_info", return_value=True),
+        patch.object(_firewall_config, "_check_dropins", return_value=True),
     ):
         assert not config.verify(argparse.Namespace())
+
+
+def _configure_recording_order(apply_returncode=0):
+    """Runs configure() with firewalld mocked out; returns the ordered calls."""
+    config = _firewall_config._FirewallConfig()
+    events = []
+
+    def run_with_logging(*args, **kwargs):
+        events.append(("run", args))
+        return subprocess.CompletedProcess(
+            args, apply_returncode if args == ("ni-firewall-apply",) else 0
+        )
+
+    with (
+        patch.object(config._opkg_helper, "install"),
+        patch.object(_firewall_config, "_offlinecmd",
+                     side_effect=lambda *a: events.append(("offline", a))),
+        patch.object(_firewall_config, "_cmd", side_effect=lambda *a: events.append(("cmd", a))),
+        patch.object(_firewall_config, "run_with_logging", side_effect=run_with_logging),
+        patch.object(_firewall_config, "_firewalld_is_running", return_value=True),
+    ):
+        config.configure(argparse.Namespace(dry_run=False))
+    return events
+
+
+def test_configure_applies_dropins_after_reload():
+    events = _configure_recording_order()
+
+    assert events.index(("offline", ("--reset-to-defaults",))) < events.index(("cmd", ("--reload",)))
+    assert events.index(("cmd", ("--reload",))) < events.index(("run", ("ni-firewall-apply",)))
+    offline_args = [arg for kind, args in events if kind == "offline" for arg in args]
+    assert not any(_firewall_config.DROPINS_POLICY in arg for arg in offline_args), (
+        "SNAC must not modify the ni-dropins policy itself"
+    )
+
+
+def test_configure_warns_when_dropins_apply_fails(caplog):
+    caplog.set_level(logging.WARNING, logger="nilrt_snac")
+
+    events = _configure_recording_order(apply_returncode=1)
+
+    assert ("run", ("ni-firewall-apply",)) in events
+    assert any("ni-firewall-apply failed" in m for m in caplog.messages)
+
+
+def test_declared_dropin_services_matches_ni_firewall_apply(tmp_path):
+    (tmp_path / "10-multi").write_text("opcua\n# comment\n\n  modbus  # inline\nopcua\n")
+    (tmp_path / "20-dnp3.conf").write_text("")
+    (tmp_path / "ni-veristand-engine").write_text("# only a comment\n")
+    (tmp_path / "30-dup").write_text("modbus\n")
+    (tmp_path / ".hidden").write_text("ssh\n")
+    (tmp_path / "subdir").mkdir()
+
+    assert _firewall_config._declared_dropin_services(tmp_path) == [
+        "opcua",
+        "modbus",
+        "dnp3",
+        "ni-veristand-engine",
+    ]
+
+
+def test_declared_dropin_services_without_open_d(tmp_path):
+    assert _firewall_config._declared_dropin_services(tmp_path / "missing") == []
+
+
+def _check_dropins_with(outputs, declared=()):
+    """Runs _check_dropins() with firewall-cmd output keyed by its trailing option."""
+
+    def getoutput(cmd):
+        for option, output in outputs.items():
+            if cmd.endswith(option):
+                return output
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with (
+        patch.object(_firewall_config.subprocess, "getoutput", side_effect=getoutput),
+        patch.object(_firewall_config, "_declared_dropin_services", return_value=list(declared)),
+    ):
+        return _firewall_config._check_dropins()
+
+
+GOOD_DROPINS = {
+    "--get-policies": "allow-host-ipv6 ni-dropins public-in work-in",
+    "--get-target": "CONTINUE",
+    "--list-ingress-zones": "public work",
+    "--list-egress-zones": "HOST",
+    "--list-services": "modbus opcua",
+}
+
+
+def test_check_dropins_passes_when_policy_matches_markers():
+    assert _check_dropins_with(GOOD_DROPINS, declared=["opcua", "modbus"])
+
+
+def test_check_dropins_fails_when_declared_service_missing(caplog):
+    assert not _check_dropins_with(GOOD_DROPINS, declared=["opcua", "dnp3"])
+    assert any("drop-in service dnp3" in m for m in caplog.messages)
+
+
+def test_check_dropins_fails_without_policy(caplog):
+    assert not _check_dropins_with({**GOOD_DROPINS, "--get-policies": "public-in work-in"})
+    assert any("MISSING: firewalld policy ni-dropins" in m for m in caplog.messages)
+
+
+def test_check_dropins_fails_on_wrong_ingress_zones():
+    assert not _check_dropins_with({**GOOD_DROPINS, "--list-ingress-zones": "work"})
+    assert not _check_dropins_with({**GOOD_DROPINS, "--list-ingress-zones": "ANY"})
+
+
+def test_check_dropins_fails_on_wrong_egress_or_target():
+    assert not _check_dropins_with({**GOOD_DROPINS, "--list-egress-zones": "public"})
+    assert not _check_dropins_with({**GOOD_DROPINS, "--get-target": "ACCEPT"})

@@ -1,4 +1,5 @@
 import argparse
+import pathlib
 import subprocess
 import time
 
@@ -7,6 +8,11 @@ from nilrt_snac._logging import run_with_logging
 
 from nilrt_snac import logger
 from nilrt_snac.opkg import opkg_helper
+
+# Policy that ni-firewall-dropins ships and opens declared services in.
+DROPINS_POLICY = "ni-dropins"
+DROPINS_OPEN_D = pathlib.Path("/etc/ni/firewall/open.d")
+DROPINS_INGRESS_ZONES = {"public", "work"}
 
 
 def _cmd(*args: str):
@@ -53,6 +59,69 @@ def _check_service_info(service: str, Q: str, expected: str) -> bool:
     return False
 
 
+def _declared_dropin_services(open_d: pathlib.Path = DROPINS_OPEN_D) -> list:
+    """Returns the services declared by NI firewall drop-in markers.
+
+    Parses the markers the same way ni-firewall-apply does: one service per
+    line, '#' starts a comment, whitespace is ignored, and a marker without
+    service lines declares the service named after the file, minus any leading
+    "NN-" prefix and trailing ".conf" suffix.
+    """
+    services: list = []
+    if not open_d.is_dir():
+        return services
+    for marker in sorted(open_d.iterdir()):
+        if marker.name.startswith(".") or not marker.is_file():
+            continue
+        declared = [
+            "".join(line.split("#", 1)[0].split())
+            for line in marker.read_text().splitlines()
+        ]
+        declared = [svc for svc in declared if svc]
+        if not declared:
+            name = marker.name.removesuffix(".conf")
+            if len(name) > 3 and name[:2].isdigit() and name[2] == "-":
+                name = name[3:]
+            declared = [name]
+        for svc in declared:
+            if svc not in services:
+                services.append(svc)
+    return services
+
+
+def _check_dropins() -> bool:
+    """Verifies the ni-dropins policy is wired to the plain network and the
+    WireGuard tunnel, and opens every service declared by a drop-in marker.
+    """
+    policy = f"--policy={DROPINS_POLICY}"
+    policies = subprocess.getoutput("firewall-cmd --permanent --get-policies").split()
+    if DROPINS_POLICY not in policies:
+        logger.error(f"MISSING: firewalld policy {DROPINS_POLICY}")
+        return False
+
+    valid = _check_target(DROPINS_POLICY, "CONTINUE")
+    ingress = set(
+        subprocess.getoutput(f"firewall-cmd --permanent {policy} --list-ingress-zones").split()
+    )
+    if ingress != DROPINS_INGRESS_ZONES:
+        logger.error(
+            f"ERROR: policy {DROPINS_POLICY} ingress zones: expected "
+            f"{sorted(DROPINS_INGRESS_ZONES)}, observed {sorted(ingress)}"
+        )
+        valid = False
+    egress = subprocess.getoutput(f"firewall-cmd --permanent {policy} --list-egress-zones")
+    if egress.split() != ["HOST"]:
+        logger.error(f"ERROR: policy {DROPINS_POLICY} egress zones: expected HOST, observed {egress}")
+        valid = False
+
+    enabled = subprocess.getoutput(f"firewall-cmd --permanent {policy} --list-services").split()
+    for service in _declared_dropin_services():
+        if service not in enabled:
+            logger.error(f"MISSING: drop-in service {service} in policy {DROPINS_POLICY}")
+            valid = False
+    return valid
+
+
 def _firewalld_is_running(timeout: float = 2) -> bool:
     try:
         result = subprocess.run(
@@ -92,6 +161,7 @@ class _FirewallConfig(_BaseConfig):
         self._opkg_helper.install("firewalld-offline-cmd")
         self._opkg_helper.install("firewalld-log-rotate")
         self._opkg_helper.install("ni-firewalld-servicedefs")
+        self._opkg_helper.install("ni-firewall-dropins")
 
         if dry_run:
             return
@@ -189,6 +259,17 @@ class _FirewallConfig(_BaseConfig):
 
         _cmd("--reload")
 
+        # The reset above also emptied the ni-dropins policy. Reopen the
+        # services that installed NI packages declare; they are reachable on
+        # both the plain network and the WireGuard tunnel. Run it only after
+        # the reload, so it sees the reset configuration rather than the
+        # daemon's stale one.
+        result = run_with_logging("ni-firewall-apply", check=False)
+        if result.returncode != 0:
+            logger.warning(
+                "ni-firewall-apply failed; services declared by NI packages may not be open"
+            )
+
     def verify(self, args: argparse.Namespace) -> bool:
         print("Verifying firewall configuration...")
         valid: bool = True
@@ -224,6 +305,7 @@ class _FirewallConfig(_BaseConfig):
                 _check_service("--zone=public", "ni-labview-realtime", "no"),
                 _check_service_info("ni-labview-realtime", "--get-ports", "3079/tcp"),
                 _check_service_info("ni-orb-rpc-server", "--get-ports", "43973/tcp"),
+                _check_dropins(),
             ]
         )
 
