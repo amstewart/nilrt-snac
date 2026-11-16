@@ -7,7 +7,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
-from nilrt_snac import opkg
+import pytest
+
+from nilrt_snac import Errors, SNACError, opkg
 from nilrt_snac._configs import _firewall_config
 
 
@@ -29,6 +31,7 @@ def test_configure_dry_run_logs_package_installs(caplog):
         patch.object(_firewall_config, "_offlinecmd") as offlinecmd,
         patch.object(_firewall_config, "_cmd") as cmd,
         patch.object(_firewall_config, "run_with_logging") as system_command,
+        patch.object(_firewall_config, "_installed_version", return_value=""),
     ):
         config.configure(argparse.Namespace(dry_run=True))
 
@@ -56,6 +59,7 @@ def test_configure_allows_ni_orb_rpc_server():
 
     with (
         patch.object(config._opkg_helper, "install"),
+        patch.object(config, "_ensure_dropins_version"),
         patch.object(_firewall_config, "_offlinecmd", side_effect=offlinecmd),
         patch.object(_firewall_config, "_cmd"),
         patch.object(_firewall_config, "run_with_logging", side_effect=run_with_logging),
@@ -138,6 +142,8 @@ def _configure_recording_order(apply_returncode=0):
 
     with (
         patch.object(config._opkg_helper, "install"),
+        patch.object(config, "_ensure_dropins_version",
+                     side_effect=lambda dry_run: events.append(("ensure", dry_run))),
         patch.object(_firewall_config, "_offlinecmd",
                      side_effect=lambda *a: events.append(("offline", a))),
         patch.object(_firewall_config, "_cmd", side_effect=lambda *a: events.append(("cmd", a))),
@@ -151,6 +157,7 @@ def _configure_recording_order(apply_returncode=0):
 def test_configure_applies_dropins_after_reload():
     events = _configure_recording_order()
 
+    assert events.index(("ensure", False)) < events.index(("offline", ("--reset-to-defaults",)))
     assert events.index(("offline", ("--reset-to-defaults",))) < events.index(("cmd", ("--reload",)))
     assert events.index(("cmd", ("--reload",))) < events.index(("run", ("ni-firewall-apply",)))
     offline_args = [arg for kind, args in events if kind == "offline" for arg in args]
@@ -263,3 +270,87 @@ def test_check_core_services_not_public_reports_every_exposed_service(caplog):
     )
     reported = [m for m in caplog.messages if "--zone=public service" in m]
     assert len(reported) == len(_firewall_config.CORE_NI_SERVICES)
+
+
+OPKG_STATUS_INSTALLED = """Package: ni-firewall-dropins
+Version: 1.0-r0.41
+Depends: ni-firewalld-servicedefs, firewalld
+Status: install ok installed
+Architecture: core2-64
+"""
+
+
+def test_installed_version_parses_opkg_status():
+    with patch.object(
+        _firewall_config.subprocess, "getoutput", return_value=OPKG_STATUS_INSTALLED
+    ) as getoutput:
+        assert _firewall_config._installed_version("ni-firewall-dropins") == "1.0-r0.41"
+    getoutput.assert_called_once_with("opkg status ni-firewall-dropins")
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["", "Package: ni-firewall-dropins\nVersion: 1.1\nStatus: unknown ok not-installed\n"],
+)
+def test_installed_version_empty_when_not_installed(status):
+    with patch.object(_firewall_config.subprocess, "getoutput", return_value=status):
+        assert _firewall_config._installed_version("ni-firewall-dropins") == ""
+
+
+def _ensure_dropins(versions, dry_run=False):
+    """Runs _ensure_dropins_version() with successive installed versions."""
+    config = _firewall_config._FirewallConfig()
+    with (
+        patch.object(_firewall_config, "_installed_version", side_effect=versions),
+        patch.object(
+            _firewall_config, "_version_at_least",
+            side_effect=lambda version, minimum: version.startswith(("1.1", "1.2")),
+        ),
+        patch.object(_firewall_config, "run_with_logging") as run,
+    ):
+        config._ensure_dropins_version(dry_run)
+    return run
+
+
+def test_ensure_dropins_version_current_does_nothing():
+    _ensure_dropins(["1.1-r0.1"]).assert_not_called()
+
+
+def test_ensure_dropins_version_upgrades_old_package():
+    run = _ensure_dropins(["1.0-r0.41", "1.1-r0.1"])
+    run.assert_called_once_with("opkg", "upgrade", "ni-firewall-dropins", check=False)
+
+
+def test_ensure_dropins_version_fails_when_no_upgrade_available():
+    with pytest.raises(SNACError) as error:
+        _ensure_dropins(["1.0-r0.41", "1.0-r0.41"])
+    assert error.value.return_code == Errors.EX_BAD_ENVIRONMENT
+    assert "ni-firewall-dropins 1.0-r0.41 is too old" in str(error.value)
+
+
+def test_ensure_dropins_version_dry_run_does_not_upgrade(caplog):
+    caplog.set_level(logging.INFO, logger="nilrt_snac")
+    _ensure_dropins(["1.0-r0.41"], dry_run=True).assert_not_called()
+    assert "Upgrading IPK: ni-firewall-dropins 1.0-r0.41" in caplog.messages
+
+
+def test_ensure_dropins_version_dry_run_not_installed_is_silent(caplog):
+    caplog.set_level(logging.INFO, logger="nilrt_snac")
+    _ensure_dropins([""], dry_run=True).assert_not_called()
+    assert caplog.messages == []
+
+
+def test_configure_stops_before_reset_when_dropins_too_old():
+    config = _firewall_config._FirewallConfig()
+    with (
+        patch.object(config._opkg_helper, "install"),
+        patch.object(_firewall_config, "_installed_version", return_value="1.0-r0.41"),
+        patch.object(_firewall_config, "_version_at_least", return_value=False),
+        patch.object(_firewall_config, "run_with_logging"),
+        patch.object(_firewall_config, "_offlinecmd") as offlinecmd,
+        patch.object(_firewall_config, "_cmd") as cmd,
+    ):
+        with pytest.raises(SNACError):
+            config.configure(argparse.Namespace(dry_run=False))
+    offlinecmd.assert_not_called()
+    cmd.assert_not_called()
