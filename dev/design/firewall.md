@@ -224,7 +224,8 @@ Ship `/usr/lib/firewalld/policies/ni-dropins.xml`:
   * its ingress zones are exactly {`public`, `work`};
   * its egress zone is `HOST`;
   * its target is `CONTINUE`;
-  * every service named by a marker in `/etc/ni/firewall/open.d/` is enabled in `ni-dropins`.
+  * every service named by a marker in `/etc/ni/firewall/open.d/` is enabled in `ni-dropins`;
+  * no core NI service is enabled in zone `public` (see [Core services](#core-services)).
 * The existing assertions keep working.
   * Examples: "`ni-labview-realtime` is not in zone `public`" and "... not in policy `public-in`".
   * Drop-ins no longer touch the `public` zone, so these checks no longer fail when a product
@@ -248,6 +249,10 @@ them as they are:
   * `work-in` re-allows `ni-service-locator`, `ni-mxs`, `ni-logos-xt` and `mdns`, so those are
     tunnel-only.
   * `http`/`https` stay closed on both paths, as intended.
+  * The `ni-firewalld-servicedefs` postinst runs again on every install or upgrade of that package,
+    and reopens all six in `public`. That exposes them on the plain network until the next
+    `nilrt-snac configure`. The postinst is deliberately left unchanged. Instead, `nilrt-snac
+    verify` fails if any of them is enabled in `public`, and re-running `configure` removes them.
 
 A core service that later meets the encryption mandate can move to a drop-in marker. It then opens on
 both paths under SNAC automatically.
