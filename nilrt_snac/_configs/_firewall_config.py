@@ -14,6 +14,12 @@ DROPINS_POLICY = "ni-dropins"
 DROPINS_OPEN_D = pathlib.Path("/etc/ni/firewall/open.d")
 DROPINS_INGRESS_ZONES = {"public", "work"}
 
+# Always-on NI services that the ni-firewalld-servicedefs postinst opens in the
+# default zone (CORE_NI_SERVICES in its recipe). In SNAC mode they must only be
+# reachable through the WireGuard tunnel, but that postinst reopens them in
+# "public" whenever the package is installed or upgraded.
+CORE_NI_SERVICES = ["ni-service-locator", "ni-mxs", "ni-logos-xt", "http", "https", "mdns"]
+
 
 def _cmd(*args: str):
     "Syntactic sugar for firewall-cmd -q."
@@ -87,6 +93,18 @@ def _declared_dropin_services(open_d: pathlib.Path = DROPINS_OPEN_D) -> list:
             if svc not in services:
                 services.append(svc)
     return services
+
+
+def _check_core_services_not_public() -> bool:
+    """Verifies that no always-on NI service is enabled in the public zone."""
+    enabled = subprocess.getoutput("firewall-cmd --permanent --zone=public --list-services").split()
+    exposed = [service for service in CORE_NI_SERVICES if service in enabled]
+    for service in exposed:
+        logger.error(
+            f"ERROR: --zone=public service {service}: expected no, observed yes "
+            "(re-run nilrt-snac configure)"
+        )
+    return not exposed
 
 
 def _check_dropins() -> bool:
@@ -306,6 +324,7 @@ class _FirewallConfig(_BaseConfig):
                 _check_service_info("ni-labview-realtime", "--get-ports", "3079/tcp"),
                 _check_service_info("ni-orb-rpc-server", "--get-ports", "43973/tcp"),
                 _check_dropins(),
+                _check_core_services_not_public(),
             ]
         )
 

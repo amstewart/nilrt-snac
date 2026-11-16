@@ -120,6 +120,7 @@ def test_verify_fails_when_firewall_is_disabled():
         patch.object(_firewall_config, "_check_service", return_value=True),
         patch.object(_firewall_config, "_check_service_info", return_value=True),
         patch.object(_firewall_config, "_check_dropins", return_value=True),
+        patch.object(_firewall_config, "_check_core_services_not_public", return_value=True),
     ):
         assert not config.verify(argparse.Namespace())
 
@@ -234,3 +235,31 @@ def test_check_dropins_fails_on_wrong_ingress_zones():
 def test_check_dropins_fails_on_wrong_egress_or_target():
     assert not _check_dropins_with({**GOOD_DROPINS, "--list-egress-zones": "public"})
     assert not _check_dropins_with({**GOOD_DROPINS, "--get-target": "ACCEPT"})
+
+
+def _check_core_services_with(public_services):
+    with patch.object(
+        _firewall_config.subprocess, "getoutput", return_value=public_services
+    ) as getoutput:
+        result = _firewall_config._check_core_services_not_public()
+    getoutput.assert_called_once_with("firewall-cmd --permanent --zone=public --list-services")
+    return result
+
+
+def test_check_core_services_not_public_passes_on_snac_public_zone():
+    assert _check_core_services_with("dhcpv6-client ssh")
+
+
+def test_check_core_services_not_public_fails_on_each_core_service(caplog):
+    for service in _firewall_config.CORE_NI_SERVICES:
+        caplog.clear()
+        assert not _check_core_services_with(f"dhcpv6-client {service} ssh"), service
+        assert any(f"service {service}:" in m for m in caplog.messages), service
+
+
+def test_check_core_services_not_public_reports_every_exposed_service(caplog):
+    assert not _check_core_services_with(
+        "dhcpv6-client http https mdns ni-logos-xt ni-mxs ni-service-locator ssh"
+    )
+    reported = [m for m in caplog.messages if "--zone=public service" in m]
+    assert len(reported) == len(_firewall_config.CORE_NI_SERVICES)
