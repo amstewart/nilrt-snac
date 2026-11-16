@@ -288,14 +288,20 @@ def test_check_dropins_fails_on_wrong_policy_wiring(view, wrong, caplog):
 
 def _check_core_services_with(permanent="dhcpv6-client ssh", runtime="dhcpv6-client ssh",
                               running=True):
+    """Runs _check_core_services_not_public(); an output of None makes that
+    configuration's query fail.
+    """
     commands = []
 
-    def getoutput(cmd):
+    def getstatusoutput(cmd):
         commands.append(cmd)
-        return permanent if "--permanent" in cmd else runtime
+        output = permanent if "--permanent" in cmd else runtime
+        if output is None:
+            return 1, "Error: DBUS_ERROR: Failed to get services"
+        return 0, output
 
     with (
-        patch.object(_firewall_config.subprocess, "getoutput", side_effect=getoutput),
+        patch.object(_firewall_config.subprocess, "getstatusoutput", side_effect=getstatusoutput),
         patch.object(_firewall_config, "_firewalld_is_running", return_value=running),
     ):
         result = _firewall_config._check_core_services_not_public()
@@ -332,6 +338,16 @@ def test_check_core_services_not_public_reports_every_exposed_service(caplog):
     assert not result
     reported = [m for m in caplog.messages if "--zone=public service" in m]
     assert len(reported) == 2 * len(_firewall_config.CORE_NI_SERVICES)
+
+
+@pytest.mark.parametrize("view", ["permanent", "runtime"])
+def test_check_core_services_not_public_fails_when_query_fails(view, caplog):
+    result, _ = _check_core_services_with(**{view: None})
+    assert not result
+    assert any(
+        f"could not list --zone=public services ({view}): Error: DBUS_ERROR" in m
+        for m in caplog.messages
+    )
 
 
 def test_check_core_services_not_public_only_permanent_when_firewalld_stopped():

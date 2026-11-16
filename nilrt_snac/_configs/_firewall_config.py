@@ -117,7 +117,13 @@ def _check_core_services_not_public() -> bool:
     valid = True
     for view, option in _firewall_views():
         command = " ".join(["firewall-cmd", *option, "--zone=public", "--list-services"])
-        enabled = subprocess.getoutput(command).split()
+        status, output = subprocess.getstatusoutput(command)
+        if status != 0:
+            # A failed query names no services; don't mistake it for a clean zone.
+            logger.error(f"ERROR: could not list --zone=public services ({view}): {output}")
+            valid = False
+            continue
+        enabled = output.split()
         for service in CORE_NI_SERVICES:
             if service in enabled:
                 logger.error(
