@@ -99,48 +99,93 @@ def _declared_dropin_services(open_d: pathlib.Path = DROPINS_OPEN_D) -> list:
     return services
 
 
+def _firewall_views() -> list:
+    """Returns the firewalld configurations to verify, as (name, firewall-cmd
+    option) pairs: the permanent one, and the runtime one while firewalld runs.
+
+    A runtime change takes effect at once but is lost on reload; a permanent
+    one takes effect only on reload. Both must be right.
+    """
+    views = [("permanent", ["--permanent"])]
+    if _firewalld_is_running():
+        views.append(("runtime", []))
+    return views
+
+
 def _check_core_services_not_public() -> bool:
     """Verifies that no always-on NI service is enabled in the public zone."""
-    enabled = subprocess.getoutput("firewall-cmd --permanent --zone=public --list-services").split()
-    exposed = [service for service in CORE_NI_SERVICES if service in enabled]
-    for service in exposed:
-        logger.error(
-            f"ERROR: --zone=public service {service}: expected no, observed yes "
-            "(re-run nilrt-snac configure)"
-        )
-    return not exposed
+    valid = True
+    for view, option in _firewall_views():
+        command = " ".join(["firewall-cmd", *option, "--zone=public", "--list-services"])
+        enabled = subprocess.getoutput(command).split()
+        for service in CORE_NI_SERVICES:
+            if service in enabled:
+                logger.error(
+                    f"ERROR: --zone=public service {service} ({view}): expected no, "
+                    "observed yes (re-run nilrt-snac configure)"
+                )
+                valid = False
+    return valid
+
+
+def _policy_info(option: list) -> dict:
+    """Returns the ni-dropins policy settings from 'firewall-cmd --info-policy'
+    as a dict of lists, or None if firewalld does not know the policy.
+    """
+    command = " ".join(["firewall-cmd", *option, f"--info-policy={DROPINS_POLICY}"])
+    status, output = subprocess.getstatusoutput(command)
+    if status != 0:
+        return None
+    info = {}
+    for line in output.splitlines()[1:]:
+        key, separator, value = line.partition(":")
+        if separator:
+            info[key.strip()] = value.split()
+    return info
 
 
 def _check_dropins() -> bool:
     """Verifies the ni-dropins policy is wired to the plain network and the
     WireGuard tunnel, and opens every service declared by a drop-in marker.
     """
-    policy = f"--policy={DROPINS_POLICY}"
-    policies = subprocess.getoutput("firewall-cmd --permanent --get-policies").split()
-    if DROPINS_POLICY not in policies:
-        logger.error(f"MISSING: firewalld policy {DROPINS_POLICY}")
-        return False
-
-    valid = _check_target(DROPINS_POLICY, "CONTINUE")
-    ingress = set(
-        subprocess.getoutput(f"firewall-cmd --permanent {policy} --list-ingress-zones").split()
-    )
-    if ingress != DROPINS_INGRESS_ZONES:
-        logger.error(
-            f"ERROR: policy {DROPINS_POLICY} ingress zones: expected "
-            f"{sorted(DROPINS_INGRESS_ZONES)}, observed {sorted(ingress)}"
-        )
-        valid = False
-    egress = subprocess.getoutput(f"firewall-cmd --permanent {policy} --list-egress-zones")
-    if egress.split() != ["HOST"]:
-        logger.error(f"ERROR: policy {DROPINS_POLICY} egress zones: expected HOST, observed {egress}")
-        valid = False
-
-    enabled = subprocess.getoutput(f"firewall-cmd --permanent {policy} --list-services").split()
-    for service in _declared_dropin_services():
-        if service not in enabled:
-            logger.error(f"MISSING: drop-in service {service} in policy {DROPINS_POLICY}")
+    valid = True
+    declared = _declared_dropin_services()
+    for view, option in _firewall_views():
+        info = _policy_info(option)
+        if info is None:
+            logger.error(f"MISSING: firewalld policy {DROPINS_POLICY} ({view})")
             valid = False
+            continue
+
+        target = info.get("target", [])
+        if target != ["CONTINUE"]:
+            logger.error(
+                f"ERROR: policy {DROPINS_POLICY} target ({view}): expected CONTINUE, "
+                f"observed {' '.join(target)}"
+            )
+            valid = False
+        ingress = set(info.get("ingress-zones", []))
+        if ingress != DROPINS_INGRESS_ZONES:
+            logger.error(
+                f"ERROR: policy {DROPINS_POLICY} ingress zones ({view}): expected "
+                f"{sorted(DROPINS_INGRESS_ZONES)}, observed {sorted(ingress)}"
+            )
+            valid = False
+        egress = info.get("egress-zones", [])
+        if egress != ["HOST"]:
+            logger.error(
+                f"ERROR: policy {DROPINS_POLICY} egress zones ({view}): expected HOST, "
+                f"observed {' '.join(egress)}"
+            )
+            valid = False
+
+        enabled = info.get("services", [])
+        for service in declared:
+            if service not in enabled:
+                logger.error(
+                    f"MISSING: drop-in service {service} in policy {DROPINS_POLICY} ({view})"
+                )
+                valid = False
     return valid
 
 

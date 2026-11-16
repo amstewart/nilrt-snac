@@ -195,81 +195,149 @@ def test_declared_dropin_services_without_open_d(tmp_path):
     assert _firewall_config._declared_dropin_services(tmp_path / "missing") == []
 
 
-def _check_dropins_with(outputs, declared=()):
-    """Runs _check_dropins() with firewall-cmd output keyed by its trailing option."""
+def _policy_info_output(services="modbus opcua", ingress="public work", egress="HOST",
+                        target="CONTINUE", header="ni-dropins"):
+    return (
+        f"{header}\n  priority: 100\n  target: {target}\n  ingress-zones: {ingress}\n"
+        f"  egress-zones: {egress}\n  services: {services}\n  ports: \n  rich rules: \n"
+    )
 
-    def getoutput(cmd):
-        for option, output in outputs.items():
-            if cmd.endswith(option):
-                return output
-        raise AssertionError(f"unexpected command: {cmd}")
+
+GOOD_PERMANENT = _policy_info_output()
+GOOD_RUNTIME = _policy_info_output(header="ni-dropins (active)")
+
+
+def _check_dropins_with(permanent=GOOD_PERMANENT, runtime=GOOD_RUNTIME, running=True,
+                        declared=("opcua", "modbus")):
+    """Runs _check_dropins() against --info-policy output for each configuration;
+    None means firewalld does not know the policy there.
+    """
+    commands = []
+
+    def getstatusoutput(cmd):
+        commands.append(cmd)
+        output = permanent if "--permanent" in cmd else runtime
+        if output is None:
+            return 140, "Error: INVALID_POLICY: ni-dropins"
+        return 0, output
 
     with (
-        patch.object(_firewall_config.subprocess, "getoutput", side_effect=getoutput),
+        patch.object(_firewall_config.subprocess, "getstatusoutput", side_effect=getstatusoutput),
         patch.object(_firewall_config, "_declared_dropin_services", return_value=list(declared)),
+        patch.object(_firewall_config, "_firewalld_is_running", return_value=running),
     ):
-        return _firewall_config._check_dropins()
+        result = _firewall_config._check_dropins()
+    return result, commands
 
 
-GOOD_DROPINS = {
-    "--get-policies": "allow-host-ipv6 ni-dropins public-in work-in",
-    "--get-target": "CONTINUE",
-    "--list-ingress-zones": "public work",
-    "--list-egress-zones": "HOST",
-    "--list-services": "modbus opcua",
-}
+def test_check_dropins_passes_when_both_configs_match_markers():
+    result, commands = _check_dropins_with()
+    assert result
+    assert commands == [
+        "firewall-cmd --permanent --info-policy=ni-dropins",
+        "firewall-cmd --info-policy=ni-dropins",
+    ]
 
 
-def test_check_dropins_passes_when_policy_matches_markers():
-    assert _check_dropins_with(GOOD_DROPINS, declared=["opcua", "modbus"])
+def test_check_dropins_fails_when_declared_service_missing_at_runtime(caplog):
+    result, _ = _check_dropins_with(runtime=_policy_info_output(services="modbus"))
+    assert not result
+    assert any("drop-in service opcua in policy ni-dropins (runtime)" in m for m in caplog.messages)
+    assert not any("(permanent)" in m for m in caplog.messages)
 
 
-def test_check_dropins_fails_when_declared_service_missing(caplog):
-    assert not _check_dropins_with(GOOD_DROPINS, declared=["opcua", "dnp3"])
-    assert any("drop-in service dnp3" in m for m in caplog.messages)
+def test_check_dropins_fails_when_declared_service_missing_permanently(caplog):
+    result, _ = _check_dropins_with(permanent=_policy_info_output(services="opcua"))
+    assert not result
+    assert any("drop-in service modbus in policy ni-dropins (permanent)" in m for m in caplog.messages)
 
 
 def test_check_dropins_fails_without_policy(caplog):
-    assert not _check_dropins_with({**GOOD_DROPINS, "--get-policies": "public-in work-in"})
-    assert any("MISSING: firewalld policy ni-dropins" in m for m in caplog.messages)
+    result, _ = _check_dropins_with(permanent=None)
+    assert not result
+    assert any("MISSING: firewalld policy ni-dropins (permanent)" in m for m in caplog.messages)
 
 
-def test_check_dropins_fails_on_wrong_ingress_zones():
-    assert not _check_dropins_with({**GOOD_DROPINS, "--list-ingress-zones": "work"})
-    assert not _check_dropins_with({**GOOD_DROPINS, "--list-ingress-zones": "ANY"})
+def test_check_dropins_fails_when_runtime_lacks_policy(caplog):
+    result, _ = _check_dropins_with(runtime=None)
+    assert not result
+    assert any("MISSING: firewalld policy ni-dropins (runtime)" in m for m in caplog.messages)
 
 
-def test_check_dropins_fails_on_wrong_egress_or_target():
-    assert not _check_dropins_with({**GOOD_DROPINS, "--list-egress-zones": "public"})
-    assert not _check_dropins_with({**GOOD_DROPINS, "--get-target": "ACCEPT"})
+def test_check_dropins_checks_only_permanent_when_firewalld_stopped():
+    result, commands = _check_dropins_with(runtime=None, running=False)
+    assert result
+    assert commands == ["firewall-cmd --permanent --info-policy=ni-dropins"]
 
 
-def _check_core_services_with(public_services):
-    with patch.object(
-        _firewall_config.subprocess, "getoutput", return_value=public_services
-    ) as getoutput:
+@pytest.mark.parametrize("view", ["permanent", "runtime"])
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        {"ingress": "work"},
+        {"ingress": "ANY"},
+        {"egress": "public"},
+        {"target": "ACCEPT"},
+    ],
+)
+def test_check_dropins_fails_on_wrong_policy_wiring(view, wrong, caplog):
+    result, _ = _check_dropins_with(**{view: _policy_info_output(**wrong)})
+    assert not result
+    assert any(f"({view})" in m for m in caplog.messages)
+
+
+def _check_core_services_with(permanent="dhcpv6-client ssh", runtime="dhcpv6-client ssh",
+                              running=True):
+    commands = []
+
+    def getoutput(cmd):
+        commands.append(cmd)
+        return permanent if "--permanent" in cmd else runtime
+
+    with (
+        patch.object(_firewall_config.subprocess, "getoutput", side_effect=getoutput),
+        patch.object(_firewall_config, "_firewalld_is_running", return_value=running),
+    ):
         result = _firewall_config._check_core_services_not_public()
-    getoutput.assert_called_once_with("firewall-cmd --permanent --zone=public --list-services")
-    return result
+    return result, commands
 
 
 def test_check_core_services_not_public_passes_on_snac_public_zone():
-    assert _check_core_services_with("dhcpv6-client ssh")
+    result, commands = _check_core_services_with()
+    assert result
+    assert commands == [
+        "firewall-cmd --permanent --zone=public --list-services",
+        "firewall-cmd --zone=public --list-services",
+    ]
 
 
 def test_check_core_services_not_public_fails_on_each_core_service(caplog):
     for service in _firewall_config.CORE_NI_SERVICES:
         caplog.clear()
-        assert not _check_core_services_with(f"dhcpv6-client {service} ssh"), service
-        assert any(f"service {service}:" in m for m in caplog.messages), service
+        result, _ = _check_core_services_with(permanent=f"dhcpv6-client {service} ssh")
+        assert not result, service
+        assert any(f"service {service} (permanent):" in m for m in caplog.messages), service
+
+
+def test_check_core_services_not_public_detects_runtime_only_exposure(caplog):
+    result, _ = _check_core_services_with(runtime="dhcpv6-client http ssh")
+    assert not result
+    assert any("service http (runtime):" in m for m in caplog.messages)
+    assert not any("(permanent)" in m for m in caplog.messages)
 
 
 def test_check_core_services_not_public_reports_every_exposed_service(caplog):
-    assert not _check_core_services_with(
-        "dhcpv6-client http https mdns ni-logos-xt ni-mxs ni-service-locator ssh"
-    )
+    exposed = "dhcpv6-client http https mdns ni-logos-xt ni-mxs ni-service-locator ssh"
+    result, _ = _check_core_services_with(permanent=exposed, runtime=exposed)
+    assert not result
     reported = [m for m in caplog.messages if "--zone=public service" in m]
-    assert len(reported) == len(_firewall_config.CORE_NI_SERVICES)
+    assert len(reported) == 2 * len(_firewall_config.CORE_NI_SERVICES)
+
+
+def test_check_core_services_not_public_only_permanent_when_firewalld_stopped():
+    result, commands = _check_core_services_with(runtime="http", running=False)
+    assert result
+    assert commands == ["firewall-cmd --permanent --zone=public --list-services"]
 
 
 OPKG_STATUS_INSTALLED = """Package: ni-firewall-dropins
