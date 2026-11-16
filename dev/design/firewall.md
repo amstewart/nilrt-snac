@@ -205,10 +205,15 @@ Ship `/usr/lib/firewalld/policies/ni-dropins.xml`:
 
 **`_FirewallConfig.configure()`**
 * Install `ni-firewall-dropins` alongside the other firewall packages.
-* After `--reset-to-defaults` and the SNAC policy setup, run `ni-firewall-apply`.
-  * Running it offline, before firewalld starts or reloads, means firewalld comes up with every
-    declared service already in `ni-dropins`.
+* After `--reset-to-defaults`, the SNAC policy setup, and the final `firewall-cmd --reload`, run
+  `ni-firewall-apply`.
+  * It must run **after** the reload. SNAC edits the configuration offline while the daemon may
+    still be running, so before the reload the daemon's permanent view still lists the old
+    drop-ins. An apply at that point would change nothing, and the reload would then empty the
+    policy.
   * `ni-firewall-apply` is idempotent and serializes itself with `flock`.
+  * If it fails (for example, a marker names an unknown service), `configure` logs a warning and
+    continues; `verify` reports the missing service.
 * Do not create, modify, or reset `ni-dropins`; meta-nilrt owns it.
 * Keep `work-in` and its legacy list unchanged. It is the transition path for products that are not
   yet onboarded.
