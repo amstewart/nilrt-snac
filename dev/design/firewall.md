@@ -185,26 +185,39 @@ Ship `/usr/lib/firewalld/policies/ni-dropins.xml`:
   the state file already lists it. That is what lets one re-run restore the policy after a SNAC
   reset. Today's hook already behaves this way against the default zone (confirmed on the VM).
 * **One-time migration.**
-  * Detect the old state format, for example by the absence of a version header in
+  * Detect the old state format by the absence of the `# ni-firewall-apply state v2` header in
     `/var/lib/ni/firewall/applied`.
-  * For each service in the old state file, remove it from the default zone and add it to
-    `ni-dropins`.
-  * Rewrite the state file in the new format.
+  * First open the services from the old state file that are still declared in `ni-dropins`. Then
+    close every service from the old state file in the default zone. A declared service therefore
+    stays reachable throughout.
+  * If either step fails, keep the old state file, so the next run retries the whole migration.
+    Reopening is idempotent.
+  * Rewrite the state file in the new format. The migrated services that are still declared are
+    recorded as the hook's own.
   * Services the hook never recorded, such as the core services, are never touched.
 
 **Policy loading on install or upgrade**
-* A running firewalld does not see a newly installed policy XML until it reloads.
-* The `ni-firewall-dropins` postinst, or the first `ni-firewall-apply` run, must reload firewalld if
-  it is running and `ni-dropins` is not loaded.
+* A running firewalld does not load a newly installed policy XML into its running config until it
+  reloads. Its config watcher may already have loaded it into the permanent config.
+* `ni-firewall-apply` reloads firewalld once if either config reports `INVALID_POLICY` (exit code
+  140) for `ni-dropins`.
 
 **Package dependency**
 * `ni-firewall-dropins` must provide the `ni-dropins` policy before nilrt-snac depends on it.
 * Add `ni-firewall-dropins` to `packagegroup-ni-snac` RDEPENDS.
+* The `nilrt-snac` recipe RDEPENDS `ni-firewall-dropins (>= 1.1)`, so installing or upgrading
+  nilrt-snac from the feed also upgrades the dropins package.
 
 ### 3. nilrt-snac changes (this repo)
 
 **`_FirewallConfig.configure()`**
 * Install `ni-firewall-dropins` alongside the other firewall packages.
+* Before resetting the firewall, require `ni-firewall-dropins` 1.1 or later.
+  * `OpkgHelper.install()` leaves an already installed package alone, and 1.0 would reopen the
+    declared services in the default zone.
+  * If the installed version is older, run `opkg upgrade ni-firewall-dropins` and check again,
+    since opkg can exit 0 without upgrading anything.
+  * If it is still too old, stop with `EX_BAD_ENVIRONMENT` and leave the firewall untouched.
 * After `--reset-to-defaults`, the SNAC policy setup, and the final `firewall-cmd --reload`, run
   `ni-firewall-apply`.
   * It must run **after** the reload. SNAC edits the configuration offline while the daemon may
