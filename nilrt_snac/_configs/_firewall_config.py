@@ -6,17 +6,13 @@ import time
 from nilrt_snac._configs._base_config import _BaseConfig
 from nilrt_snac._logging import run_with_logging
 
-from nilrt_snac import Errors, SNACError, logger
+from nilrt_snac import logger
 from nilrt_snac.opkg import opkg_helper
 
 # Policy that ni-firewall-dropins ships and opens declared services in.
 DROPINS_POLICY = "ni-dropins"
 DROPINS_OPEN_D = pathlib.Path("/etc/ni/firewall/open.d")
 DROPINS_INGRESS_ZONES = {"public", "work"}
-DROPINS_PACKAGE = "ni-firewall-dropins"
-# 1.1 ships the ni-dropins policy; 1.0 reopens drop-ins in the default zone,
-# which the WireGuard tunnel cannot reach.
-DROPINS_MIN_VERSION = "1.1"
 
 # Always-on NI services that the ni-firewalld-servicedefs postinst opens in the
 # default zone (CORE_NI_SERVICES in its recipe). In SNAC mode they must only be
@@ -195,29 +191,6 @@ def _check_dropins() -> bool:
     return valid
 
 
-def _installed_version(package: str) -> str:
-    """Returns the installed version of an IPK, or "" if it is not installed."""
-    version = ""
-    installed = False
-    for line in subprocess.getoutput(f"opkg status {package}").splitlines():
-        if line.startswith("Version:"):
-            version = line.split(":", 1)[1].strip()
-        elif line.startswith("Status:"):
-            installed = line.split()[-1] == "installed"
-    return version if installed else ""
-
-
-def _version_at_least(version: str, minimum: str) -> bool:
-    """Compares IPK versions the way opkg does."""
-    result = subprocess.run(
-        ["opkg", "compare-versions", version, ">=", minimum],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
-
-
 def _firewalld_is_running(timeout: float = 2) -> bool:
     try:
         result = subprocess.run(
@@ -248,33 +221,6 @@ class _FirewallConfig(_BaseConfig):
         super().__init__("firewall")
         self._opkg_helper = opkg_helper
 
-    def _ensure_dropins_version(self, dry_run: bool) -> None:
-        """Brings ni-firewall-dropins up to DROPINS_MIN_VERSION, or stops.
-
-        OpkgHelper.install() leaves an already installed package alone, and
-        an older ni-firewall-dropins would reopen the declared services in the
-        default zone after the reset below, out of reach of the tunnel.
-        """
-        version = _installed_version(DROPINS_PACKAGE)
-        if version and _version_at_least(version, DROPINS_MIN_VERSION):
-            return
-        if dry_run:
-            # Not installed: install() above would install the feed's version.
-            if version:
-                logger.info(f"Upgrading IPK: {DROPINS_PACKAGE} {version}")
-            return
-
-        logger.info(f"Upgrading IPK: {DROPINS_PACKAGE} {version or '(not installed)'}")
-        run_with_logging("opkg", "upgrade", DROPINS_PACKAGE, check=False)
-        version = _installed_version(DROPINS_PACKAGE)
-        if not (version and _version_at_least(version, DROPINS_MIN_VERSION)):
-            raise SNACError(
-                f"{DROPINS_PACKAGE} {version or '(not installed)'} is too old; SNAC needs "
-                f"{DROPINS_MIN_VERSION} or later. Make a package feed that provides it "
-                "available (then run 'opkg update'), and run nilrt-snac configure again.",
-                Errors.EX_BAD_ENVIRONMENT,
-            )
-
     def configure(self, args: argparse.Namespace) -> None:
         print("Configuring firewall...")
         dry_run: bool = args.dry_run
@@ -284,9 +230,7 @@ class _FirewallConfig(_BaseConfig):
         self._opkg_helper.install("firewalld-offline-cmd")
         self._opkg_helper.install("firewalld-log-rotate")
         self._opkg_helper.install("ni-firewalld-servicedefs")
-        self._opkg_helper.install(DROPINS_PACKAGE)
-        # Before the reset, so a failure leaves the firewall untouched.
-        self._ensure_dropins_version(dry_run)
+        self._opkg_helper.install("ni-firewall-dropins")
 
         if dry_run:
             return
